@@ -1047,3 +1047,4 @@ class AiDrawPlugin(Star):
                 req.prompt = f"[系统提示：文生图出错: {e}]\n\n{original_content}"
 
             return
+ 
