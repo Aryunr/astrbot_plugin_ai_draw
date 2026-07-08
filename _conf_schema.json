@@ -77,5 +77,29 @@
         "type": "int",
         "default": 500,
         "hint": "识别结果超过此字数会被截断，设为 0 表示不限制"
+    },
+    "context_memory_enabled": {
+        "description": "上下文记忆开关",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后记录生成/识别历史并注入LLM上下文，关闭后回退120秒旧方案"
+    },
+    "context_memory_max_entries": {
+        "description": "每个会话最大记忆条数",
+        "type": "int",
+        "default": 20,
+        "hint": "每个会话最多保留 N 条记录，超出后自动删除最早的"
+    },
+    "context_memory_max_age_hours": {
+        "description": "单条记忆最长保留时间(小时)",
+        "type": "int",
+        "default": 24,
+        "hint": "超过此时间的记录会被自动清理"
+    },
+    "context_memory_inject_summary": {
+        "description": "注入历史摘要到LLM上下文",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后在每次对话中注入本会话的生成/识别历史摘要"
     }
 }

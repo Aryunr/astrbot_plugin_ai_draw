@@ -1,5 +1,5 @@
 name: astrbot_plugin_ai_draw
 desc: 接入第三方多模态模型API，实现文生图/识别图像，支持Open AI兼容API
 author: https://github.com/Aryunr
-version: 1.0.0
+version: 1.1.0
 repo: https://github.com/your_name/astrbot_plugin_ai_draw
