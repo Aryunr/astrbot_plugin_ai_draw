@@ -102,14 +102,14 @@
 
 **Q: 使用 `/draw` 没反应？**
 
-**A: 检查 `api_base`、`api_key`、`gen_model` 是否正确配置，可使用 `/test_draw_api` 测试连通性。**
+**A: 检查 `API 地址`、`API KEY`、`文生图模型` 是否正确配置，可使用 `/test_draw_api` 测试连通性。**
 
 **Q: 引用图片不识别？**
 
-**A: 确认 `vision_model` 已正确配置，且模型支持多模态识图。**
+**A: 确认 `识图模型` 已正确配置，且模型支持多模态识图。**
 
 **Q: LLM Agent 模式下不想触发画图？**
 
-**A: 关闭 `enable_llm_agent` 开关，仅通过 `/draw` 命令使用。**
+**A: 关闭 `LLM Agent 模式` ，仅通过 `/draw` 命令使用。**
 
 
