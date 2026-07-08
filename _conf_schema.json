@@ -1,0 +1,81 @@
+{
+    "api_base": {
+        "description": "API 地址",
+        "type": "string",
+        "default": "",
+        "hint": "OpenAI 兼容 API 的基础地址，如 https://api.siliconflow.cn/v1"
+    },
+    "api_key": {
+        "description": "API Key",
+        "type": "string",
+        "hint": "在模型提供商网站获取 API Key",
+        "obvious_hint": true
+    },
+    "gen_model": {
+        "description": "文生图模型",
+        "type": "string",
+        "default": "",
+        "hint": "用于生成图片的模型名称配置"
+    },
+    "vision_model": {
+        "description": "识图模型",
+        "type": "string",
+        "default": "",
+        "hint": "用于识别图片的模型名称配置"
+    },
+    "image_size": {
+        "description": "图片尺寸",
+        "type": "string",
+        "default": "1024x1024",
+        "options": ["1024x1024", "768x1024", "1024x768", "512x512", "1024x576", "576x1024"],
+        "hint": "生成图片的默认尺寸"
+    },
+    "enable_llm_agent": {
+        "description": "启用 LLM Agent 模式",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后支持自然语言触发画图/识图，关闭后仅能通过 /draw 等命令使用"
+    },
+    "enable_permission": {
+        "description": "启用权限控制",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后将限制非管理员用户的每日 API 调用次数，防止恶意刷图产生额外费用"
+    },
+    "admin_ids": {
+        "description": "管理员用户 ID 白名单",
+        "type": "list",
+        "default": [],
+        "hint": "管理员的用户 ID（如 QQ 号），多个用英文逗号分隔。管理员不受每日调用次数限制。"
+    },
+    "daily_limit": {
+        "description": "普通用户每日调用上限（次数）",
+        "type": "int",
+        "default": 10,
+        "hint": "超出后插件将静默拒绝服务（用户收不到任何回应），仅对非管理员生效"
+    },
+    "temp_dir": {
+        "description": "临时缓存目录",
+        "type": "string",
+        "default": "data/temp/ai_draw",
+        "hint": "存放临时图片文件的目录路径"
+    },
+    "temp_ttl": {
+        "description": "临时缓存生命周期（秒）",
+        "type": "int",
+        "default": 3600,
+        "hint": "超过此时间的临时文件会被自动清理，设为 0 表示不自动清理"
+    },
+    "no_markdown": {
+        "description": "识图结果去除 Markdown 格式",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后识别结果中的粗体、代码块等 Markdown 格式会被去除"
+    },
+    "max_description_length": {
+        "description": "识图结果最大字数限制",
+        "type": "int",
+        "default": 500,
+        "hint": "识别结果超过此字数会被截断，设为 0 表示不限制"
+    }
+}
