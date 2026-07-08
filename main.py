@@ -1738,7 +1738,7 @@ class AiDrawPlugin(Star):
                         logger.warning(f"AiDraw on_llm_request: 会话缓存内容为空，跳过注入 (session={session_id})")
 
 
-                    _scene0_injected = True
+
 
                 else:
 
