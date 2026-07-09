@@ -31,7 +31,7 @@
 ### 方式二：手动安装
 
 1. 下载 `astrbot_plugin_ai_draw.zip`
-2. 在 AstrBot WebUI → 插件管理 → 右上角「导入插件」上传 zip 文件
+2. 在 AstrBot WebUI → 插件管理 → 上传 zip 文件
 
 ## ⚙️ 配置
 
