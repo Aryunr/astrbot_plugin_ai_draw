@@ -3,13 +3,13 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](https://github.com/Aryunr/astrbot_plugin_ai_draw/releases)
 
-**专为Astrbot定制。接入第三方多模态模型 API，可混合不同LLM,多模态模型，实现文生图与图片识别，支持 OpenAI 兼容 API。**
+**专为Astrbot定制。接入第三方多模态模型 API，可混合使用不同LLM,多模态模型，实现文生图与图片识别，支持 OpenAI 兼容 API。**
 
 ## ✨ 功能
 
 | 功能 | 说明 |
 |------|------|
-| 🎨 **文生图** | 通过 `/draw` 命令或自然语言关键词触发，调用 AI 模型生成图片 |
+| 🎨 **文生图** | 通过 `/draw` 命令或文字关键词触发，调用 AI 模型生成图片 |
 | 🔍 **图片识别** | 引用/回复图片即可自动识别内容，支持追问 |
 | 🧠 **LLM Agent 模式** | 开启后支持文字触发，无需记住命令前缀 |
 | 💾 **上下文记忆** | SQLite 数据库存储生成/识别历史，支持引用和模糊匹配 |
