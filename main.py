@@ -85,6 +85,13 @@ except ImportError:
 _VISION_POSTPROCESSED_EXTRA = "ai_draw_vision_postprocessed"
 _NL = chr(10)  # 避免在拼接提示词时依赖字符串转义
 
+# 识图模型统一使用“客观提取”提示词，避免它把用户随口说的话当成聊天内容而跑偏。
+_VISION_DESCRIBE_PROMPT = (
+    "你是一个图片内容提取助手。请客观、详细地描述图片中可见的全部内容，"
+    "包括主体、场景、动作、颜色、构图，以及图片中出现的所有文字（如有请逐字转写）。"
+    "不要回答问题、不要评论、不要猜测图片外的信息，只输出图片描述。"
+)
+
 from providers.openai_compat import OpenAICompatProvider
 
 from context_memory import ContextMemory
@@ -1300,28 +1307,45 @@ class AiDrawPlugin(Star):
         return text.strip()
 
     @staticmethod
-    def _build_vision_postprocess_prompt(vision_result: str, user_question: str) -> str:
+    def _build_vision_postprocess_prompt(vision_results, user_text: str) -> str:
         """构造注入主 LLM 的识图后处理提示词。
 
-        识图模型只负责“看到什么”，主 LLM 负责“怎么按人设说”。
+        vision_results 为每张图片的识图描述列表；主 LLM 只看到这些文字。
         """
-        vision_result = (vision_result or "").strip()
-        user_question = (user_question or "").strip()
+        if isinstance(vision_results, str):
+            vision_results = [vision_results]
+        vision_results = [str(r).strip() for r in (vision_results or []) if str(r).strip()]
+        user_text = (user_text or "").strip()
 
-        prompt = (
-            "[系统提示：用户发送了一张图片，视觉模型已经识别了图片内容，结果如下]" + _NL
-            + f"{vision_result}" + _NL
-        )
-        if user_question:
+        image_count = len(vision_results)
+        if image_count <= 0:
+            return user_text
+
+        if image_count == 1:
+            prompt = (
+                "[系统提示：用户发送了一张图片，视觉模型已经识别了图片内容，结果如下]" + _NL
+                + vision_results[0] + _NL
+            )
+        else:
+            prompt = (
+                "[系统提示：用户一次发送了" + str(image_count) + "张图片，视觉模型已经逐张识别，结果如下]" + _NL
+            )
+            for idx, desc in enumerate(vision_results, 1):
+                prompt += "第" + str(idx) + "张图片：" + desc + _NL
+
+        if user_text:
             prompt += (
-                "[请严格基于以上视觉识别结果回答用户的问题，使用你的人格和语气自然回复，"
-                "不要生硬复述识别结果，也不要编造识别结果中没有的内容。]" + _NL
-                + f"用户的问题是：{user_question}"
+                "[请严格围绕以上图片识别结果进行回复，使用你的人格和语气自然表达。"
+                "用户发送图片时附带的文字是：" + user_text + "。"
+                "如果附带文字是具体问题，请结合图片回答；如果只是感叹或闲聊，请围绕图片内容自然回应。"
+                "不要脱离图片内容去联想群聊、人物或其他无关话题，不要生硬复述识别结果，"
+                "也不要编造识别结果中没有的内容。]"
             )
         else:
             prompt += (
-                "[用户没有附加文字。请严格基于以上视觉识别结果，使用你的人格和语气"
-                "向用户描述这张图片，不要生硬复述识别结果，也不要编造识别结果中没有的内容。]"
+                "[用户发送图片时没有附带文字。请严格围绕以上图片识别结果，使用你的人格和语气"
+                "向用户描述图片内容。不要脱离图片内容联想其他话题，不要生硬复述识别结果，"
+                "也不要编造识别结果中没有的内容。]"
             )
         return prompt
 
@@ -1490,50 +1514,38 @@ class AiDrawPlugin(Star):
 
 
 
-    def _extract_image_from_event(self, event: AstrMessageEvent) -> Optional[str]:
+    def _extract_images_from_event(self, event: AstrMessageEvent) -> List[str]:
+        """从事件中提取全部图片，返回本地路径或 URL 列表（已去重）。
 
-        """从事件中提取图片，返回本地路径或 URL。
-
-
-
-        优先使用 on_agent_begin 中保存的缓存图片（因为 on_agent_begin
-
-        已从事件消息链中移除了图片以防止主代理报错）。
-
-        如果缓存中没有，则从事件消息链中递归查找（包括引用/回复嵌套的图片）。
-
+        优先使用 on_agent_begin 中保存的缓存图片；如果缓存中没有，则从
+        事件消息链中递归查找（包括引用/回复嵌套的图片）。
         """
+        results: List[str] = []
+        seen = set()
 
         event_id = str(id(event.message_obj))
-
         cached_images = self._pending_images.pop(event_id, None)
-
         if cached_images:
-
             for comp in cached_images:
-
                 result = self._comp_to_image_url(comp)
-
-                if result:
-
-                    return result
-
-            return None
-
-
-
-        # 回退：递归查找消息链中的所有图片（包括引用/回复嵌套的）
+                if result and result not in seen:
+                    seen.add(result)
+                    results.append(result)
 
         if hasattr(event, 'message_obj') and event.message_obj:
-
             found, _ = self._extract_images_recursive(event.message_obj.message)
+            for comp in found:
+                result = self._comp_to_image_url(comp)
+                if result and result not in seen:
+                    seen.add(result)
+                    results.append(result)
 
-            if found:
+        return results
 
-                return self._comp_to_image_url(found[0])
-
-        return None
-
+    def _extract_image_from_event(self, event: AstrMessageEvent) -> Optional[str]:
+        """兼容旧调用：只返回事件中的第一张图片。"""
+        images = self._extract_images_from_event(event)
+        return images[0] if images else None
 
     # 工具：将 URL 转为 data URI（用于 API 调用）
 
@@ -1616,17 +1628,17 @@ class AiDrawPlugin(Star):
 
         # 提取图片（优先：on_agent_begin 缓存 > req.image_urls > 消息链直接查找）
 
-        image_comp = self._extract_image_from_event(event)
+        image_list = self._extract_images_from_event(event)
 
 
 
         # 补充：检查 req.image_urls（主代理已从引用/回复消息中提取了图片）
 
-        if not image_comp and hasattr(req, 'image_urls') and req.image_urls:
+        if not image_list and hasattr(req, 'image_urls') and req.image_urls:
 
-            image_comp = req.image_urls[0]
+            image_list = [str(u) for u in req.image_urls if u]
 
-            logger.debug(f"AiDraw on_llm_request: 从 req.image_urls 获取引用图片")
+            logger.debug(f"AiDraw on_llm_request: 从 req.image_urls 获取引用图片 {len(image_list)} 张")
 
 
 
@@ -1794,7 +1806,7 @@ class AiDrawPlugin(Star):
 
         _scene0_injected = False
 
-        if not image_comp:
+        if not image_list:
             session_id = str(user_id)
             group_id_str = str(group_id) if group_id else ""
 
@@ -1881,7 +1893,7 @@ class AiDrawPlugin(Star):
 
 
 
-        if image_comp:
+        if image_list:
 
             self._init_provider()
             if not self.provider:
@@ -1890,186 +1902,225 @@ class AiDrawPlugin(Star):
 
                 return
 
-            # 提取用户对图片的问题（如果有），并去掉 @ 机器人和 /describe 命令前缀
-
+            # 用户附带的文字只用于主 LLM 后处理；识图模型始终使用客观描述提示词，
+            # 避免 MiMo 等聊天型视觉模型把“666开智了”当成闲聊话题而跑偏。
             raw_question = user_message or getattr(req, "prompt", "") or ""
 
             image_question = self._strip_image_command_prefix(raw_question)
 
-            describe_prompt = image_question or "请详细描述这张图片的内容"
+            describe_prompt = _VISION_DESCRIBE_PROMPT
 
 
 
-            logger.debug(f"AiDraw on_llm_request: 开始识图")
+            logger.debug(f"AiDraw on_llm_request: 开始识图，共 {len(image_list)} 张图片")
 
 
+
+            vision_descriptions = []
+
+            processed_refs = []
 
             try:
 
-                # 确保图片路径可用
+                for idx, image_comp in enumerate(image_list, 1):
 
-                if not image_comp.startswith(("http://", "https://", "data:")):
+                    if not isinstance(image_comp, str):
 
-                    if os.path.exists(image_comp):
+                        image_comp = str(image_comp)
 
-                        image_comp = await self._convert_to_url(image_comp)
+                    if not image_comp:
+
+                        logger.warning(f"AiDraw on_llm_request: 第 {idx} 张图片地址为空，跳过")
+
+                        continue
+
+                    # 确保图片路径可用
+
+                    if not image_comp.startswith(("http://", "https://", "data:")):
+
+                        if os.path.exists(image_comp):
+
+                            image_comp = await self._convert_to_url(image_comp)
+
+                        else:
+
+                            logger.warning(f"AiDraw on_llm_request: 第 {idx} 张图片无法访问，跳过: {image_comp[:80]}")
+
+                            continue
+
+                    processed_refs.append(image_comp)
+
+                    try:
+
+                        result = await self.provider.image_to_text(image_comp, describe_prompt)
+
+                    except Exception as e:
+
+                        logger.warning(f"AiDraw on_llm_request: 第 {idx} 张图片识图失败: {e}")
+
+                        continue
+
+                    if result and result.strip():
+
+                        vision_descriptions.append(result.strip())
+
+                        logger.info(f"AiDraw on_llm_request: 第 {idx} 张图片识别完成 (len={len(result.strip())})")
 
                     else:
 
-                        req.prompt = (
-                            "[系统提示：无法访问用户发送的图片文件，请告知用户重新发送]"
-                            + _NL + _NL + f"{user_message}"
-                        )
-
-                        return
-
-
-
-                result = await self.provider.image_to_text(image_comp, describe_prompt)
-
-                if result:
-
-                    self.perm_mgr.record_call(user_id)
-
-                    # 缓存当前图片 URL，用于引用消息图片兜底
-
-                    try:
-
-                        msg_id = str(getattr(event.message_obj, 'message_id', None) or '')
-
-                        if msg_id and isinstance(image_comp, str) and image_comp.startswith(("http://", "https://", "data:")):
-
-                            self._image_cache[msg_id] = image_comp
-
-                            self._save_image_cache()
-
-                            logger.info(f"AiDraw on_llm_request: cached image msg_id={msg_id}")
-
-                    except Exception:
-
-                        pass
-
-                    # 格式化结果（去 markdown + 截断），供缓存使用
-
-                    cached_text = self._format_description(result)
-
-                    # 保存到会话缓存，供后续无图片的消息使用
-
-                    session_id = str(user_id)
-
-                    self._recent_analyses[session_id] = cached_text
-                    if self.context_memory:
-                        try:
-                            self.context_memory.add(
-                                str(user_id), str(group_id) if group_id else "",
-                                "describe", image_question or "请描述图片内容", cached_text
-                            )
-                        except Exception:
-                            pass
-
-                    logger.info(f"AiDraw on_llm_request: 已缓存识图结果 (session={session_id})")
-
-                    if self._is_vision_llm_postprocess_enabled():
-                        # 新流程：识图模型负责“看到什么”，主 LLM 负责“按人设怎么说”。
-                        # 这里不发送消息、不 stop_event，只把识图结果注入主 LLM 请求。
-
-                        event.set_extra(_VISION_POSTPROCESSED_EXTRA, True)
-
-                        req.prompt = self._build_vision_postprocess_prompt(result, image_question)
-
-                        # 主 LLM 只需要看到识图文字，不再看原图，避免重复识图或主模型不支持多模态而报错
-                        if hasattr(req, "image_urls"):
-                            try:
-                                req.image_urls = []
-                            except Exception:
-                                pass
-                        if hasattr(req, "extra_user_content_parts"):
-                            try:
-                                req.extra_user_content_parts = [
-                                    part for part in (req.extra_user_content_parts or [])
-                                    if not str(getattr(part, "text", "") or "").startswith("[Image Attachment")
-                                ]
-                            except Exception:
-                                pass
-
-                        logger.info(
-                            "AiDraw on_llm_request: 已将识图结果注入主 LLM 后处理 "
-                            f"(len={len(result.strip())}, question_len={len(image_question)})"
-                        )
-                    else:
-                        # 旧流程（开关关闭）：插件直接发送识图模型返回的格式化结果
-
-                        self._scene1_handled_sessions.add(session_id)
-
-                        try:
-
-                            reply = self._format_description(f"{result.strip()}")
-
-                            await event.send(self._make_chain([Comp.Plain(text=reply)]))
-
-                            logger.info("AiDraw on_llm_request: 已直接发送识图结果")
-
-                            # 阻止后续处理：LLM 调用、Agent 子阶段
-
-                            event.stop_event()
-
-                            logger.info("AiDraw on_llm_request: 已阻止 LLM 和 Agent 后续处理")
-
-                        except Exception as e:
-
-                            logger.warning(f"AiDraw on_llm_request: 直接发送失败 ({e})，降级为 LLM 注入")
-
-                            # 降级方案：注入到 req.prompt 让 LLM 回复
-
-                            analysis_note = (
-                                "[系统提示：用户发送了一张图片，图片分析结果如下]" + _NL
-                                + f"{result.strip()}" + _NL
-                                + "[请基于以上分析结果直接回答用户的问题，不要重复分析过程，"
-                                "不要使用markdown格式，回答控制在100字以内，"
-                                "不要编造与图片分析结果不符的内容]"
-                            )
-
-                            if user_message:
-
-                                req.prompt = f"{user_message}" + _NL + _NL + analysis_note
-
-                            else:
-
-                                req.prompt = analysis_note
-
-                            logger.info(f"AiDraw on_llm_request: 已注入识图结果到 LLM 请求 (len={len(result.strip())})")
-
-                    # 清理原始压缩图片文件，防止 Agent 工具通过文件路径直接读取
-
-                    try:
-
-                        from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
-
-                        temp_dir = get_astrbot_temp_path()
-
-                    except ImportError:
-
-                        temp_dir = os.path.join("data", "temp")
-
-                    self._clear_temp_image_files(temp_dir)
-
-                    # 清理工具图片缓存，防止 Agent 读取旧图片
-
-                    try:
-
-                        self._clear_tool_images_cache()
-
-                    except Exception:
-
-                        pass
-
-                else:
-
-                    logger.warning("AiDraw 识图结果为空，将交由 LLM 处理")
+                        logger.warning(f"AiDraw on_llm_request: 第 {idx} 张图片识图结果为空，跳过")
 
             except Exception as e:
 
-                logger.error(f"AiDraw 识图失败: {e}")
+                logger.error(f"AiDraw on_llm_request: 批量识图异常: {e}")
+
+
+
+            if not vision_descriptions:
+
+                logger.warning("AiDraw on_llm_request: 所有图片识图结果为空，将交由 LLM 处理")
+
+                return
+
+
+
+            self.perm_mgr.record_call(user_id)
+
+            # 缓存第一张可用图片 URL，用于引用消息图片兜底
+
+            cache_image = next((r for r in processed_refs if r.startswith(("http://", "https://", "data:"))), None)
+
+            if cache_image:
+
+                try:
+
+                    msg_id = str(getattr(event.message_obj, 'message_id', None) or '')
+
+                    if msg_id:
+
+                        self._image_cache[msg_id] = cache_image
+
+                        self._save_image_cache()
+
+                        logger.info(f"AiDraw on_llm_request: cached image msg_id={msg_id}")
+
+                except Exception:
+
+                    pass
+
+            # 合并所有图片描述，供缓存/记忆使用
+
+            if len(vision_descriptions) == 1:
+
+                combined_raw = vision_descriptions[0]
+
+            else:
+
+                combined_raw = _NL.join(f"第{i}张图片：{d}" for i, d in enumerate(vision_descriptions, 1))
+
+            cached_text = self._format_description(combined_raw)
+
+            # 保存到会话缓存，供后续无图片的消息使用
+
+            session_id = str(user_id)
+
+            self._recent_analyses[session_id] = cached_text
+            if self.context_memory:
+                try:
+                    self.context_memory.add(
+                        str(user_id), str(group_id) if group_id else "",
+                        "describe", image_question or "请描述图片内容", cached_text
+                    )
+                except Exception:
+                    pass
+
+            logger.info(
+                f"AiDraw on_llm_request: 已缓存 {len(vision_descriptions)} 张图片的识图结果 "
+                f"(session={session_id}, total_len={sum(len(x) for x in vision_descriptions)})"
+            )
+
+            if self._is_vision_llm_postprocess_enabled():
+                # 新流程：识图模型负责“看到什么”，主 LLM 负责“按人设怎么说”。
+                # 这里不发送消息、不 stop_event，只把识图结果注入主 LLM 请求。
+
+                event.set_extra(_VISION_POSTPROCESSED_EXTRA, True)
+
+                req.prompt = self._build_vision_postprocess_prompt(vision_descriptions, image_question)
+
+                # 主 LLM 只需要看到识图文字，不再看原图，避免重复识图或主模型不支持多模态而报错
+                if hasattr(req, "image_urls"):
+                    try:
+                        req.image_urls = []
+                    except Exception:
+                        pass
+                if hasattr(req, "extra_user_content_parts"):
+                    try:
+                        req.extra_user_content_parts = [
+                            part for part in (req.extra_user_content_parts or [])
+                            if not str(getattr(part, "text", "") or "").startswith("[Image Attachment")
+                        ]
+                    except Exception:
+                        pass
+
+                logger.info(
+                    "AiDraw on_llm_request: 已将识图结果注入主 LLM 后处理 "
+                    f"(images={len(vision_descriptions)}, total_len={sum(len(x) for x in vision_descriptions)}, "
+                    f"user_text_len={len(image_question)})"
+                )
+            else:
+                # 旧流程（开关关闭）：插件直接发送识图模型返回的格式化结果
+
+                self._scene1_handled_sessions.add(session_id)
+
+                try:
+
+                    reply = self._format_description(combined_raw)
+
+                    await event.send(self._make_chain([Comp.Plain(text=reply)]))
+
+                    logger.info("AiDraw on_llm_request: 已直接发送识图结果")
+
+                    # 阻止后续处理：LLM 调用、Agent 子阶段
+
+                    event.stop_event()
+
+                    logger.info("AiDraw on_llm_request: 已阻止 LLM 和 Agent 后续处理")
+
+                except Exception as e:
+
+                    logger.warning(f"AiDraw on_llm_request: 直接发送失败 ({e})，降级为 LLM 注入")
+
+                    # 降级方案：注入到 req.prompt 让 LLM 回复
+
+                    analysis_note = self._build_vision_postprocess_prompt(vision_descriptions, image_question)
+
+                    req.prompt = analysis_note
+
+                    logger.info(f"AiDraw on_llm_request: 已注入识图结果到 LLM 请求 (images={len(vision_descriptions)})")
+
+            # 清理原始压缩图片文件，防止 Agent 工具通过文件路径直接读取
+
+            try:
+
+                from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
+
+                temp_dir = get_astrbot_temp_path()
+
+            except ImportError:
+
+                temp_dir = os.path.join("data", "temp")
+
+            self._clear_temp_image_files(temp_dir)
+
+            # 清理工具图片缓存，防止 Agent 读取旧图片
+
+            try:
+
+                self._clear_tool_images_cache()
+
+            except Exception:
+
+                pass
 
 
 

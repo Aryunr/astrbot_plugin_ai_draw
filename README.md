@@ -1,7 +1,7 @@
 # astrbot_plugin_ai_draw
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](https://github.com/Aryunr/astrbot_plugin_ai_draw/releases)
+[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](https://github.com/Aryunr/astrbot_plugin_ai_draw/releases)
 
 **专为Astrbot定制。接入第三方多模态模型 API，可混合不同LLM,多模态模型，实现文生图与图片识别，支持 OpenAI 兼容 API。**
 
@@ -82,6 +82,7 @@
 
 - 引用图片 + `这张图里有什么？` → 识别并回答
 - 引用图片 + 无文字 → 返回完整描述
+- 一次发送多张图片时会逐张识别并合并后交给主 LLM
 - 识图后可追问
 
 > **识图后处理开启时**：发送图片后，插件先调用识图模型提取内容，再把识图结果注入主 LLM，由主 LLM 按人设组织语言回复；关闭时则由插件直接返回识图模型的结果。
