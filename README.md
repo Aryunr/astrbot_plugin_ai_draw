@@ -1,7 +1,7 @@
 # astrbot_plugin_ai_draw
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)](https://github.com/Aryunr/astrbot_plugin_ai_draw/releases)
+[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](https://github.com/Aryunr/astrbot_plugin_ai_draw/releases)
 
 **专为Astrbot定制。接入第三方多模态模型 API，可混合不同LLM,多模态模型，实现文生图与图片识别，支持 OpenAI 兼容 API。**
 
