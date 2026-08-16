@@ -80,6 +80,10 @@ except ImportError:
     logger.warning("AiDraw: 当前 AstrBot 版本不支持 register_on_llm_request 钩子")
 
 
+# 事件级标记：on_llm_request 已经完成“识图结果注入主 LLM”的后处理，
+# 后续 on_agent_begin 看到该标记时应直接跳过，避免重复处理图片。
+_VISION_POSTPROCESSED_EXTRA = "ai_draw_vision_postprocessed"
+_NL = chr(10)  # 避免在拼接提示词时依赖字符串转义
 
 from providers.openai_compat import OpenAICompatProvider
 
@@ -171,7 +175,7 @@ class PermissionManager:
 
 
 
-    def __init__(self, config: AstrBotConfig):
+    def __init__(self, config: AstrBotConfig = None):
 
         self.config = config
 
@@ -394,22 +398,22 @@ class PermissionManager:
 
           "",
 
-          "1.1.0")
+          "1.2.0")
 
 class AiDrawPlugin(Star):
 
 
 
 
-    def __init__(self, context: Context, config: AstrBotConfig):
+    def __init__(self, context: Context, config: AstrBotConfig = None):
 
         super().__init__(context)
 
-        self.config = config
+        self.config = config if config is not None else (getattr(self, 'config', None) or {})
 
         self.provider: Optional[OpenAICompatProvider] = None
 
-        self.perm_mgr = PermissionManager(config)
+        self.perm_mgr = PermissionManager(self.config)
 
         self.temp_dir: Optional[str] = None
 
@@ -474,7 +478,6 @@ class AiDrawPlugin(Star):
 
         # 初始化 Provider
 
-        self._init_provider()
 
 
 
@@ -482,9 +485,10 @@ class AiDrawPlugin(Star):
 
             "AiDraw 插件已加载。"
 
-            f" 权限控制: {'开启' if config.get('enable_permission', False) else '关闭'}"
+            f" 权限控制: {'开启' if self.config.get('enable_permission', False) else '关闭'}"
 
-            f"  LLM Agent: {'开启' if config.get('enable_llm_agent', True) else '关闭'}"
+            f"  LLM Agent: {'开启' if self.config.get('enable_llm_agent', True) else '关闭'}"
+            f"  识图后处理: {'开启' if self.config.get('vision_llm_postprocess', True) else '关闭'}"
 
         )
 
@@ -500,11 +504,17 @@ class AiDrawPlugin(Star):
 
         """从配置初始化图片服务提供商"""
 
+        gen_api_base = self.config.get("gen_api_base", "").strip()
+        gen_api_key = self.config.get("gen_api_key", "").strip()
+        vision_api_base = self.config.get("vision_api_base", "").strip()
+        vision_api_key = self.config.get("vision_api_key", "").strip()
         api_base = self.config.get("api_base", "").strip()
 
         api_key = self.config.get("api_key", "").strip()
 
-        if not api_base or not api_key:
+        has_gen = bool(gen_api_base or api_base) and bool(gen_api_key or api_key)
+        has_vision = bool(vision_api_base or api_base) and bool(vision_api_key or api_key)
+        if not has_gen and not has_vision:
 
             logger.warning("AiDraw: 未配置 API 地址或 API Key，部分功能不可用。"
 
@@ -532,6 +542,10 @@ class AiDrawPlugin(Star):
 
             default_size=self.config.get("image_size", "1024x1024"),
 
+            gen_api_base=gen_api_base or None,
+            gen_api_key=gen_api_key or None,
+            vision_api_base=vision_api_base or None,
+            vision_api_key=vision_api_key or None,
         )
 
         logger.info(f"AiDraw Provider 已初始化: {api_base}")
@@ -833,7 +847,12 @@ class AiDrawPlugin(Star):
     async def _ui_cmd_test_draw(self, event, *args, **kwargs):
 
         """测试绘图API连通性，不生成图片(管理员)"""
-        pass
+        self._init_provider()
+        if not self.provider:
+            yield event.plain_result("⚠️ 未配置 API，请先在 WebUI 中配置后再试。")
+            return
+        result = await self.provider.test_connection()
+        yield event.plain_result(result)
 
 
 
@@ -869,17 +888,57 @@ class AiDrawPlugin(Star):
 
             return
 
-        if not hasattr(event, 'message_obj') or not event.message_obj:
+        # 如果 on_llm_request 已经在“识图后处理”模式下处理过本次事件的图片，
 
+        # 这里直接跳过，避免二次提取或直接回复。
+
+        try:
+
+            if event.get_extra(_VISION_POSTPROCESSED_EXTRA):
+
+                return
+
+        except Exception:
+
+            pass
+
+        if not hasattr(event, 'message_obj') or not event.message_obj:
 
             return
 
         if not hasattr(event.message_obj, 'message') or not event.message_obj.message:
 
+            return
+
+        # 识图后处理模式：本钩子只负责提取并暂存图片，供 on_llm_request 统一处理。
+
+        # 无论 AstrBot 先调用 on_agent_begin 还是 on_llm_request，最终识图都由
+
+        # on_llm_request 完成，并由主 LLM 生成回复。
+
+        if self.config.get("vision_llm_postprocess", True):
+
+            found_images, remaining = self._extract_images_recursive(
+
+                event.message_obj.message
+
+            )
+
+            if not found_images:
+
+                return
+
+            event.message_obj.message = remaining
+
+            event_id = str(id(event.message_obj))
+
+            self._pending_images[event_id] = found_images
+
+            logger.debug(f"AiDraw on_agent_begin: 已暂存 {len(found_images)} 张图片，等待 on_llm_request 处理")
 
             return
 
-
+        # 旧模式（识图后处理关闭）：沿用原来的 on_agent_begin 直接识图逻辑
 
         # 检查此会话是否已在 on_llm_request (Scene 1) 处理过
 
@@ -889,20 +948,15 @@ class AiDrawPlugin(Star):
 
             if sess in self._scene1_handled_sessions:
 
-
                 found, remaining = self._extract_images_recursive(event.message_obj.message)
 
                 if found:
 
                     event.message_obj.message = remaining
 
-
-
                     await self._process_quote_images(event, found)
 
                     return
-
-
 
                 return
 
@@ -924,7 +978,6 @@ class AiDrawPlugin(Star):
 
 
 
-
         event.message_obj.message = remaining
 
 
@@ -932,8 +985,6 @@ class AiDrawPlugin(Star):
         event_id = str(id(event.message_obj))
 
         self._pending_images[event_id] = found_images
-
-
 
 
 
@@ -1001,6 +1052,16 @@ class AiDrawPlugin(Star):
         final_url = await self._convert_to_url(image_url)
 
         if not final_url:
+
+            return
+
+        # 懒加载 Provider（该路径仅在后处理开关关闭时使用）
+
+        self._init_provider()
+
+        if not self.provider:
+
+            logger.warning("AiDraw on_agent_begin: Provider 未初始化，无法识图")
 
             return
 
@@ -1221,6 +1282,49 @@ class AiDrawPlugin(Star):
 
 
 
+    def _is_vision_llm_postprocess_enabled(self) -> bool:
+        """识图结果是否交给主 LLM 后处理（可由 WebUI 配置开关控制）"""
+        return bool(self.config.get("vision_llm_postprocess", True))
+
+    @staticmethod
+    def _strip_image_command_prefix(text: str) -> str:
+        """去掉 @ 机器人和 /describe 前缀，保留用户对图片的真实提问"""
+        if not text:
+            return ""
+        text = re.sub(r"^\[At:\d+\]\s*", "", text.strip())
+        lowered = text.lower()
+        for prefix in ("/describe", "describe"):
+            if lowered.startswith(prefix):
+                text = text[len(prefix):].strip()
+                break
+        return text.strip()
+
+    @staticmethod
+    def _build_vision_postprocess_prompt(vision_result: str, user_question: str) -> str:
+        """构造注入主 LLM 的识图后处理提示词。
+
+        识图模型只负责“看到什么”，主 LLM 负责“怎么按人设说”。
+        """
+        vision_result = (vision_result or "").strip()
+        user_question = (user_question or "").strip()
+
+        prompt = (
+            "[系统提示：用户发送了一张图片，视觉模型已经识别了图片内容，结果如下]" + _NL
+            + f"{vision_result}" + _NL
+        )
+        if user_question:
+            prompt += (
+                "[请严格基于以上视觉识别结果回答用户的问题，使用你的人格和语气自然回复，"
+                "不要生硬复述识别结果，也不要编造识别结果中没有的内容。]" + _NL
+                + f"用户的问题是：{user_question}"
+            )
+        else:
+            prompt += (
+                "[用户没有附加文字。请严格基于以上视觉识别结果，使用你的人格和语气"
+                "向用户描述这张图片，不要生硬复述识别结果，也不要编造识别结果中没有的内容。]"
+            )
+        return prompt
+
     def _format_description(self, text: str) -> str:
 
         """根据配置格式化识别结果：去除 Markdown + 字数限制"""
@@ -1293,6 +1397,30 @@ class AiDrawPlugin(Star):
         return text
 
 
+
+    _SIZE_MAP = {
+        "4k": "4096x4096", "4K": "4096x4096", "4096": "4096x4096",
+        "2k": "2048x2048", "2K": "2048x2048", "2048": "2048x2048",
+        "1k": "1024x1024", "1K": "1024x1024", "1024": "1024x1024",
+        "横版": "1792x1024", "横向": "1792x1024", "横屏": "1792x1024", "landscape": "1792x1024",
+        "竖版": "1024x1792", "纵向": "1024x1792", "竖屏": "1024x1792", "portrait": "1024x1792",
+        "720p": "1280x720", "720": "1280x720",
+        "1080p": "1920x1080", "1080": "1920x1080",
+        "768": "768x768", "512": "512x512",
+    }
+
+    @classmethod
+    def _parse_size(cls, prompt: str):
+        """从 prompt 中提取尺寸关键词并移除，返回 (cleaned_prompt, size_str)"""
+        found_size = None
+        cleaned = prompt
+        for keyword in sorted(cls._SIZE_MAP.keys(), key=len, reverse=True):
+            if keyword in cleaned:
+                found_size = cls._SIZE_MAP[keyword]
+                cleaned = cleaned.replace(keyword, "").strip()
+                cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+                break
+        return cleaned, found_size
 
     def _extract_images_recursive(self, components: list):
 
@@ -1625,6 +1753,7 @@ class AiDrawPlugin(Star):
 
                     return
 
+                self._init_provider()
                 if not self.provider:
 
                     await event.send(self._make_chain([Comp.Plain(text="❌ API 未配置")]))
@@ -1639,41 +1768,9 @@ class AiDrawPlugin(Star):
 
                 try:
 
-                    api_base = self.provider.api_base.rstrip("/")
+                    result = await self.provider.test_connection()
 
-                    test_url = f"{api_base}/models"
-
-                    headers = {"Authorization": f"Bearer {self.provider.api_key}"}
-
-                    async with aiohttp.ClientSession() as session:
-
-                        async with session.get(test_url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-
-                            if resp.status == 200:
-
-                                data = await resp.json()
-
-                                model_count = len(data.get("data", []))
-
-                                await event.send(self._make_chain([Comp.Plain(
-
-                                    text=f"✅ API 连接正常（{api_base}）\n状态码: {resp.status}\n可用模型数: {model_count}"
-
-                                )]))
-
-                            else:
-
-                                body = await resp.text()
-
-                                await event.send(self._make_chain([Comp.Plain(
-
-                                    text=f"⚠️ API 返回异常状态码: {resp.status}\n{body[:200]}"
-
-                                )]))
-
-                except asyncio.TimeoutError:
-
-                    await event.send(self._make_chain([Comp.Plain(text=f"❌ API 连接超时（{api_base}）")]))
+                    await event.send(self._make_chain([Comp.Plain(text=f"🔍 API 连接测试结果：\n{result}")]))
 
                 except Exception as e:
 
@@ -1786,17 +1883,20 @@ class AiDrawPlugin(Star):
 
         if image_comp:
 
+            self._init_provider()
             if not self.provider:
 
                 logger.warning("AiDraw: Provider 未初始化，无法识图")
 
                 return
 
+            # 提取用户对图片的问题（如果有），并去掉 @ 机器人和 /describe 命令前缀
 
+            raw_question = user_message or getattr(req, "prompt", "") or ""
 
-            # 提取用户对图片的问题（如果有）
+            image_question = self._strip_image_command_prefix(raw_question)
 
-            describe_prompt = user_message if user_message else "请详细描述这张图片的内容"
+            describe_prompt = image_question or "请详细描述这张图片的内容"
 
 
 
@@ -1816,7 +1916,10 @@ class AiDrawPlugin(Star):
 
                     else:
 
-                        req.prompt = f"[系统提示：无法访问用户发送的图片文件，请告知用户重新发送]\n\n{user_message}"
+                        req.prompt = (
+                            "[系统提示：无法访问用户发送的图片文件，请告知用户重新发送]"
+                            + _NL + _NL + f"{user_message}"
+                        )
 
                         return
 
@@ -1859,64 +1962,82 @@ class AiDrawPlugin(Star):
                         try:
                             self.context_memory.add(
                                 str(user_id), str(group_id) if group_id else "",
-                                "describe", user_message, cached_text
+                                "describe", image_question or "请描述图片内容", cached_text
                             )
                         except Exception:
                             pass
 
                     logger.info(f"AiDraw on_llm_request: 已缓存识图结果 (session={session_id})")
 
-                    # 追踪此会话已在 Scene 1 处理过
+                    if self._is_vision_llm_postprocess_enabled():
+                        # 新流程：识图模型负责“看到什么”，主 LLM 负责“按人设怎么说”。
+                        # 这里不发送消息、不 stop_event，只把识图结果注入主 LLM 请求。
 
-                    self._scene1_handled_sessions.add(session_id)
+                        event.set_extra(_VISION_POSTPROCESSED_EXTRA, True)
 
-                    # 直接发送格式化回复，然后 stop_event() 阻止 LLM 调用和 Agent 子阶段
+                        req.prompt = self._build_vision_postprocess_prompt(result, image_question)
 
-                    try:
+                        # 主 LLM 只需要看到识图文字，不再看原图，避免重复识图或主模型不支持多模态而报错
+                        if hasattr(req, "image_urls"):
+                            try:
+                                req.image_urls = []
+                            except Exception:
+                                pass
+                        if hasattr(req, "extra_user_content_parts"):
+                            try:
+                                req.extra_user_content_parts = [
+                                    part for part in (req.extra_user_content_parts or [])
+                                    if not str(getattr(part, "text", "") or "").startswith("[Image Attachment")
+                                ]
+                            except Exception:
+                                pass
 
-                        reply = f"{result.strip()}"
-
-                        reply = self._format_description(reply)
-
-                        await event.send(self._make_chain([Comp.Plain(text=reply)]))
-
-                        logger.info("AiDraw on_llm_request: 已直接发送识图结果")
-
-                        # 阻止后续处理：LLM 调用、Agent 子阶段
-
-                        event.stop_event()
-
-                        logger.info("AiDraw on_llm_request: 已阻止 LLM 和 Agent 后续处理")
-
-                    except Exception as e:
-
-                        logger.warning(f"AiDraw on_llm_request: 直接发送失败 ({e})，降级为 LLM 注入")
-
-                        # 降级方案：注入到 req.prompt 让 LLM 回复
-
-                        analysis_note = (
-
-                            f"[系统提示：用户发送了一张图片，图片分析结果如下]\n"
-
-                            f"{result.strip()}\n"
-
-                            f"[请基于以上分析结果直接回答用户的问题，不要重复分析过程，"
-
-                            f"不要使用markdown格式，回答控制在100字以内，"
-
-                            f"不要编造与图片分析结果不符的内容]"
-
+                        logger.info(
+                            "AiDraw on_llm_request: 已将识图结果注入主 LLM 后处理 "
+                            f"(len={len(result.strip())}, question_len={len(image_question)})"
                         )
+                    else:
+                        # 旧流程（开关关闭）：插件直接发送识图模型返回的格式化结果
 
-                        if user_message:
+                        self._scene1_handled_sessions.add(session_id)
 
-                            req.prompt = f"{user_message}\n\n{analysis_note}"
+                        try:
 
-                        else:
+                            reply = self._format_description(f"{result.strip()}")
 
-                            req.prompt = analysis_note
+                            await event.send(self._make_chain([Comp.Plain(text=reply)]))
 
-                        logger.info(f"AiDraw on_llm_request: 已注入识图结果到 LLM 请求 (len={len(result.strip())})")
+                            logger.info("AiDraw on_llm_request: 已直接发送识图结果")
+
+                            # 阻止后续处理：LLM 调用、Agent 子阶段
+
+                            event.stop_event()
+
+                            logger.info("AiDraw on_llm_request: 已阻止 LLM 和 Agent 后续处理")
+
+                        except Exception as e:
+
+                            logger.warning(f"AiDraw on_llm_request: 直接发送失败 ({e})，降级为 LLM 注入")
+
+                            # 降级方案：注入到 req.prompt 让 LLM 回复
+
+                            analysis_note = (
+                                "[系统提示：用户发送了一张图片，图片分析结果如下]" + _NL
+                                + f"{result.strip()}" + _NL
+                                + "[请基于以上分析结果直接回答用户的问题，不要重复分析过程，"
+                                "不要使用markdown格式，回答控制在100字以内，"
+                                "不要编造与图片分析结果不符的内容]"
+                            )
+
+                            if user_message:
+
+                                req.prompt = f"{user_message}" + _NL + _NL + analysis_note
+
+                            else:
+
+                                req.prompt = analysis_note
+
+                            logger.info(f"AiDraw on_llm_request: 已注入识图结果到 LLM 请求 (len={len(result.strip())})")
 
                     # 清理原始压缩图片文件，防止 Agent 工具通过文件路径直接读取
 
@@ -1953,6 +2074,7 @@ class AiDrawPlugin(Star):
 
 
             return
+
 
 
         draw_keywords = [
@@ -2012,6 +2134,7 @@ class AiDrawPlugin(Star):
 
         if should_draw:
 
+            self._init_provider()
             if not self.provider:
 
                 logger.warning("AiDraw: Provider 未初始化，无法画图")
@@ -2036,7 +2159,8 @@ class AiDrawPlugin(Star):
 
             try:
 
-                image_data = await self.provider.text_to_image(user_message)
+                draw_prompt, parsed_size = self._parse_size(user_message)
+                image_data = await self.provider.text_to_image(draw_prompt, size=parsed_size)
 
                 if image_data:
 

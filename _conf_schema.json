@@ -17,18 +17,62 @@
         "default": "",
         "hint": "用于生成图片的模型名称配置"
     },
+    "gen_api_base": {
+        "description": "生图 API 地址（可选）",
+        "type": "string",
+        "default": "",
+        "hint": "若不填则使用上面「API 地址」。如硅基流动: https://api.siliconflow.cn/v1"
+    },
+    "gen_api_key": {
+        "description": "生图 API Key（可选）",
+        "type": "string",
+        "default": "",
+        "hint": "若不填则使用上面「API Key」"
+    },
     "vision_model": {
         "description": "识图模型",
         "type": "string",
         "default": "",
         "hint": "用于识别图片的模型名称配置"
     },
+    "vision_api_base": {
+        "description": "识图 API 地址（可选）",
+        "type": "string",
+        "default": "",
+        "hint": "若不填则使用上面「API 地址」。如 Gemini 代理地址"
+    },
+    "vision_api_key": {
+        "description": "识图 API Key（可选）",
+        "type": "string",
+        "default": "",
+        "hint": "若不填则使用上面「API Key」"
+    },
+    "vision_llm_postprocess": {
+        "description": "识图结果交由主LLM后处理",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后：识图模型只负责提取图片内容，最终回复由主LLM按人格和上下文组织；关闭后：直接返回识图模型的原始回复"
+    },
     "image_size": {
         "description": "图片尺寸",
         "type": "string",
         "default": "1024x1024",
-        "options": ["1024x1024", "768x1024", "1024x768", "512x512", "1024x576", "576x1024"],
-        "hint": "生成图片的默认尺寸"
+        "options": [
+            "1024x1024",
+            "512x512",
+            "768x768",
+            "1024x768",
+            "768x1024",
+            "1024x576",
+            "576x1024",
+            "1280x720",
+            "1920x1080",
+            "2048x2048",
+            "4096x4096",
+            "1792x1024",
+            "1024x1792"
+        ],
+        "hint": "生成图片的默认尺寸。注：部分模型不支持大尺寸"
     },
     "enable_llm_agent": {
         "description": "启用 LLM Agent 模式",
